@@ -1,0 +1,155 @@
+#!/bin/sh
+
+if [ -x /run/bin2bc ]; then
+   TIMEOUT=
+   [ -x /usr/bin/timeout ] && TIMEOUT='/usr/bin/timeout -k 1000 900'
+   $TIMEOUT /opt/cg/retdec/bin/retdec-decompiler "$1"
+   exit $?
+fi
+
+usage()
+{
+   {
+     echo "Usage: $0 <options> <executable-files>"
+     echo ""
+     echo "     --output <dir>       Directory to store output files in. Defaults"
+     echo "                          to the current directory."
+     echo ""
+     echo "     --retdec <dir>       Directory where retdec is installed.  Defaults"
+     echo "                          to /opt/retdec."
+     echo ""
+     echo "     --config <file>      Specify the retdec-decompiler config file to"
+     echo "                          use.  Default is retdec-decompiler default file."
+     echo ""
+     echo "     --force              Force rebuild even if binary is older than existing"
+     echo "                          byte code file."
+     echo ""
+     echo "     --keep_filename      Keep output filename same as input binary. Output"
+     echo "                          maybe overwritten."
+     echo ""
+     echo "     --verbose            Be verbose about what is happening."
+     echo ""
+   } 1>&2
+   exit 1
+}
+
+RETDECDIR=/opt/retdec
+OUTPUT=.
+CF=
+FORCE=0
+VERBOSE=0
+KEEP_FILENAME=0
+KEEP_DSM=0
+KEEP_LL=0
+
+while [ $# -ne 0 ]
+do
+   case "$1" in
+     -h) usage;;
+     --help) usage;;
+     --output) OUTPUT="$2"; shift; shift;;
+     --retdec) RETDECDIR="$2"; shift; shift;;
+     --config) CF="--config $2"; shift; shift;;
+     --force) FORCE=1; shift;;
+     --keep_filename) KEEP_FILENAME=1; shift;;
+     --keep_dsm) KEEP_DSM=1; shift;;
+     --keep_ll) KEEP_LL=1; shift;;     
+     --verbose) VERBOSE=1; shift;;
+     *) break;
+   esac
+done
+
+USEDOCKER=0
+
+[ -x $RETDECDIR/bin/retdec-decompiler ] && USEDOCKER=0
+
+if [ $USEDOCKER -eq 1 ]; then
+   SIGMAL="`docker images | awk '$1 == "sigmal" {print $1}'`"
+   [ "x$SIGMAL" = 'x' ] && {
+      echo "$0: Unable to find retdec-decompiler installation" 1>&2
+      echo "              locally or from a sigmal docker image." 1>&2
+      exit 1
+   }
+fi
+
+TMPDIR=/tmp/bin2bc.$$
+mkdir $TMPDIR
+
+if [ $USEDOCKER -eq 1 ]; then
+  BIN=`basename $0`
+  cp $0 $TMPDIR/ && chmod 755 $TMPDIR/$BIN
+else
+  [ "x$CF" = 'x' -a -f $RETDECDIR/share/retdec/llvmir-only.json ] && {
+     CF="--config $RETDECDIR/share/retdec/llvmir-only.json"
+  }
+fi
+
+for bin
+do
+   FT=`file "$bin"`
+   case "$FT" in
+    *ELF*) ;;
+    *)
+      [ $VERBOSE -eq 1 ] && {
+        echo "`date` Skipping $bin; is not an ELF executable." 1>&2
+      }
+      continue;;
+   esac
+   
+   input="`echo \"$bin\" | tr / _ | sed -e 's/_\.\._/_/g' -e 's/^\.\._/_/' -e 's/^_//'`"
+
+   [ $FORCE -eq 0 -a -f "$OUTPUT/$input.bc" -a $bin -ot "$OUTPUT/$input".bc ] && {
+     [ $VERBOSE -eq 1 ] && {
+        echo "`date` Skipping $bin; byte code is current." 1>&2
+     }
+     continue
+   }
+
+   rm -f "$TMPDIR/$input*"
+   cp "$bin" "$TMPDIR/$input"
+
+   LOG="$TMPDIR/retdec.log"
+
+   if [ $USEDOCKER -eq 0 ]; then
+      [ $VERBOSE -eq 1 ] && {
+       echo "`date` Decompiling $bin to bytecode." 1>&1
+      }
+      $RETDECDIR/bin/retdec-decompiler $CF "$TMPDIR/$input" > $LOG 2>&1
+   else
+      [ $VERBOSE -eq 1 ] && {
+       echo "`date` Decompiling $bin to bytecode via docker." 1>&2
+      }
+      docker run --rm -tt --entrypoint /run/bin2bc -v "$TMPDIR":/run sigmal /run/"$input" > $LOG 2>&1
+   fi
+
+   rm -f "$TMPDIR/$input"
+   rm -f "$TMPDIR/$input.config.json"
+   
+   if [ -f "$TMPDIR/$input.bc" ]; then
+      [ $VERBOSE -eq 1 ] && {
+       echo "`date` Finished decompiling $bin." 1>&2
+      }
+      output=$input
+      output="`basename \"$bin\"`"
+      if [ $KEEP_FILENAME -eq 1 ]; then
+         output="`basename \"$bin\"`"
+      fi
+      cp "$TMPDIR/$input.bc" "$OUTPUT/$output".bc
+      if [ $KEEP_DSM -eq 1 ]; then
+         cp "$TMPDIR/$input.dsm" "$OUTPUT/$output".dsm
+      fi
+      if [ $KEEP_LL -eq 1 ]; then
+         cp "$TMPDIR/$input.ll" "$OUTPUT/$output".ll
+      fi
+      
+      rm -f "$TMPDIR/$input.bc"
+   else
+     [ $VERBOSE -eq 1 ] && {
+       echo "`date` Error decompiling $bin." 1>&2
+     }
+     tail -5 $LOG | sed -e 's/^/    /'
+   fi
+   rm $LOG
+done
+
+rm -rf $TMPDIR

@@ -1,0 +1,68 @@
+FROM --platform=linux/amd64 ubuntu:22.04
+
+RUN apt-get update && \
+  apt-get install -y \
+  python3 \
+  python3-pip \
+  python-is-python3 \
+  wget && \
+  apt-get clean
+
+WORKDIR "/tmp"
+
+# retdec 
+COPY docker/decompiler-config.json /tmp/
+COPY docker/install_retdec.sh /tmp/
+
+ENV PATH="$PATH:/opt/cg/retdec/bin"
+ENV RETDEC_PATH="/opt/cg/retdec"
+
+# leargist
+COPY docker/install_pyleargist.sh /tmp/
+
+#install modified llvmlite
+COPY docker/llvmlite-settypename.patch docker/llvm-gcc-fix.patch docker/install_llvmlite.sh /tmp/
+
+#llvm pass
+COPY deps/canon_pass /tmp/llvm_pass
+COPY docker/install_llvm_pass.sh /tmp/
+
+#cleanup
+COPY docker/install_cleanup.sh /tmp/
+
+#install and cleanup at the same time for a thin docker layer
+RUN cd /tmp && bash install_retdec.sh && \
+  cd /tmp && bash install_pyleargist.sh && \
+  cd /tmp && bash install_llvmlite.sh && \
+  cd /tmp && bash install_llvm_pass.sh && \
+  cd /tmp && bash install_cleanup.sh
+
+ARG APP_DIR="/cg"
+RUN mkdir -p ${APP_DIR}
+WORKDIR ${APP_DIR}
+
+COPY codegenome ./codegenome
+COPY scripts ./scripts
+COPY requirements.txt setup.py README.md ./
+COPY scripts/run_service.py ./
+COPY utils/app/ ./
+
+ARG HOST_UID=1000
+# Create a non-root user
+ARG USERNAME=cguser
+ARG USER_UID=$HOST_UID
+ARG USER_GID=$USER_UID
+RUN groupadd --gid $USER_GID $USERNAME \
+    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME
+
+RUN python -mpip install .
+RUN chmod -x run_service.py
+COPY .env.defaults .env
+# dev
+#install clang for unit testing
+# RUN apt-get install -y clang 
+
+USER $USERNAME
+
+CMD ["python3", "/cg/run_service.py", "0.0.0.0", "5001"]
+LABEL org.opencontainers.image.source=https://github.com/code-genome/codegenome

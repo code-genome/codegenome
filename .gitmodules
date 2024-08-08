@@ -1,0 +1,3 @@
+[submodule "deps/canon_pass"]
+	path = deps/canon_pass
+	url = https://github.com/code-genome/canon_pass.git

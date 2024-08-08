@@ -1,0 +1,16 @@
+#!/bin/sh
+# usages: bin2bc_dir <input_dir> <output_dir>
+
+SRC="$1"
+DST="$2"
+if [ "$SRC" == "" ];then
+    echo Usage: $0 input_dir output_dir
+    exit 1
+fi
+if [ "$DST" == "" ];then
+    DST="."
+else
+    mkdir -p $DST
+fi
+
+find "$SRC"|xargs -n 1 -P $(nproc --all) ./bin2bc --output "$DST" --keep_dsm --keep_ll

@@ -1,0 +1,38 @@
+diff --git a/ffi/value.cpp b/ffi/value.cpp
+index 05c67b6..9327faa 100644
+--- a/ffi/value.cpp
++++ b/ffi/value.cpp
+@@ -408,6 +408,18 @@ LLVMPY_GetTypeName(LLVMTypeRef type)
+     return LLVMPY_CreateString("");
+ }
+ 
++API_EXPORT(void)
++LLVMPY_SetTypeName(LLVMTypeRef type, const char *Name)
++{
++    // try to convert to a struct type, works for other derived
++    // types too
++    llvm::Type* unwrapped = llvm::unwrap(type);
++    llvm::StructType* ty = llvm::dyn_cast<llvm::StructType>(unwrapped);
++    if (ty && !ty->isLiteral()) {
++        ty->setName(Name);
++    }
++}
++
+ API_EXPORT(bool)
+ LLVMPY_TypeIsPointer(LLVMTypeRef type)
+ {
+diff --git a/llvmlite/binding/value.py b/llvmlite/binding/value.py
+index 4e21b3e..b13cdba 100644
+--- a/llvmlite/binding/value.py
++++ b/llvmlite/binding/value.py
+@@ -53,6 +53,10 @@ class TypeRef(ffi.ObjectRef):
+         """
+         return ffi.ret_string(ffi.lib.LLVMPY_GetTypeName(self))
+ 
++    @name.setter
++    def name(self, val):
++        ffi.lib.LLVMPY_SetTypeName(self, _encode_string(val))
++
+     @property
+     def is_pointer(self):
+         """

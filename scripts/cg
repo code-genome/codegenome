@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+##
+## This code is part of the Code Genome Framework.
+##
+## (C) Copyright IBM 2023.
+##
+## This code is licensed under the Apache License, Version 2.0. You may
+## obtain a copy of this license in the LICENSE.txt file in the root directory
+## of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+##
+## Any modifications or derivative works of this code must retain this
+## copyright notice, and modified files need to carry a notice indicating
+## that they have been altered from the originals.
+##
+import argparse
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+
+logging.basicConfig(level=logging.ERROR)
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../"))
+
+import codegenome._defaults as defaults  # noqa
+
+CG_CACHE_DIR = os.path.expanduser(os.environ.get("CG_CACHE_DIR", "~/.cg/cache"))
+CG_DOCKER_IMAGE_NAME = os.environ.get("CG_DOCKER_IMAGE_NAME", "cg-worker")
+
+
+def genediff_docker(args):
+    avars = vars(args)
+    avars.pop("func")
+    avars.pop("docker")
+    cach_dir = avars.pop("cache_dir")
+    file1, file2 = avars.pop("file1"), avars.pop("file2")
+    file1, file2 = os.path.abspath(file1), os.path.abspath(file2)
+
+    assert os.path.isfile(file1)
+    assert os.path.isfile(file2)
+
+    opts = []
+    for k, v in avars.items():
+        if v is not False:
+            opts.append("--" + k)
+            if v is not True:
+                opts.append(str(v))
+    tmp_cache_dir = "/tmp/cache"
+    tmp_file1 = os.path.join("/tmp/file1", os.path.basename(file1))
+    tmp_file2 = os.path.join("/tmp/file2", os.path.basename(file2))
+
+    cg_opts = ["--cache_dir", tmp_cache_dir]
+
+    proc_args = (
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            os.path.abspath(cach_dir) + ":" + tmp_cache_dir,
+            "-v",
+            os.path.dirname(file1) + ":" + os.path.dirname(tmp_file1),
+            "-v",
+            os.path.dirname(file2) + ":" + os.path.dirname(tmp_file2),
+            "-it",
+            CG_DOCKER_IMAGE_NAME,
+        ]
+        + ["cg"]
+        + cg_opts
+        + ["genediff"]
+        + opts
+        + [tmp_file1, tmp_file2]
+    )
+
+    proc = subprocess.Popen(proc_args, stdout=subprocess.PIPE)
+    while True:
+        line = proc.stdout.readline()
+        if not line:
+            break
+        sys.stdout.buffer.write(line)
+
+
+def genediff(args):
+    import codegenome as cg  # noqa
+
+    logger = logging.getLogger("codegenome")
+    logger.setLevel(logging.ERROR)
+    repo_path = os.path.join(args.cache_dir, "local.kg")
+    if not os.path.exists(repo_path):
+        os.makedirs(repo_path)
+
+    if args.docker:
+        return genediff_docker(args)
+
+    kg = cg.GenomeKG(repo_path)
+    if args.verbose:
+        ch = logging.StreamHandler()
+        logger.addHandler(ch)
+        logger.setLevel(logging.WARNING)
+        kg.logger = logger
+
+    args.match_sim_thr /= 100
+    args.mismatch_sim_thr /= 100
+
+    b1 = kg.add_file(args.file1, keep_aux_files=(not args.remove_aux_files))
+    b2 = kg.add_file(args.file2, keep_aux_files=(not args.remove_aux_files))
+    ret, stat = kg.bindiff(
+        b1,
+        b2,
+        match_sim_thr=args.match_sim_thr,
+        mismatch_sim_thr=args.mismatch_sim_thr,
+        method=args.method,
+        output_detail=args.output_detail,
+    )
+    if args.format == "json":
+        print(json.dumps(ret))
+    else:
+        print_output(ret, args.no_color)
+
+
+def print_output(r, no_color=False):
+    color_code = {
+        "=": "\033[;32m",
+        "!": "\033[;31m",
+        "~": "\033[;36m",
+        "+": "\033[;35m",
+        "-": "\033[;33m",
+    }
+    print(f"similarity:\t{r.get('similarity')}")
+    try:
+        for l in r.get("diff_details"):
+            if not no_color:
+                sys.stdout.write(color_code.get(l["op"], ""))
+
+            print(f"{l['op']}, {l['f1']}, \t{l['f2']}, \t{l['score']}")
+
+            if not no_color:
+                sys.stdout.write("\033[0m")
+    finally:
+        if not no_color:
+            sys.stdout.write("\033[0m")
+
+
+def clear_cache(args):
+    if os.path.isdir(args.cache_dir):
+        x = input(
+            f"Clearing Code Genome Cache at {args.cache_dir}?. Press [y] to continue. "
+        )
+        if x.lower().strip() == "y":
+            shutil.rmtree(args.cache_dir)
+    else:
+        sys.stderr.write(f"Invalid cache directory ({args.cache_dir}).\n")
+        exit(2)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default=CG_CACHE_DIR,
+        help="Cache directory. Defaults to `~/.cg/cache`",
+    )
+    parser.add_argument(
+        "--clear_cache",
+        action="store_true",
+        default=False,
+        help="clear cache directory. Default dir is `~/.cg/cache`",
+    )
+
+    subparsers = parser.add_subparsers(help="commands")
+
+    diff_parser = subparsers.add_parser(
+        "genediff", help="Binary diff using function level genes."
+    )
+    diff_parser.add_argument(
+        "-v", "--verbose", action="store_true", default=False, help="Verbose output."
+    ),
+    diff_parser.add_argument(
+        "-d", "--docker", action="store_true", default=False, help="Use docker."
+    )
+    diff_parser.add_argument(
+        "--remove_aux_files",
+        action="store_true",
+        default=False,
+        help="If enabled, removes auxillary files to save storage. Function details such as machine-code and llvm-ir will be unavailable.",
+    )
+    diff_parser.add_argument(
+        "-f", "--format", default="default", help="Output format. Options: default|json"
+    )
+    diff_parser.add_argument(
+        "--no_color",
+        action="store_true",
+        default=False,
+        help="No color in default output.",
+    )
+    diff_parser.add_argument(
+        "-gv",
+        "--gene_version",
+        type=str,
+        default=defaults.DEFAULT_GENE_VERSION,
+        help="Code Genome version.",
+    )
+    diff_parser.add_argument(
+        "--match_sim_thr",
+        type=float,
+        default=defaults.FILE_COMPARE_FUNC_MATCH_SIM_THRESHOLD * 100,
+        help="Function match similarity threshold. Greater than or equal to this threshold will be considered as a match `~`",
+    )
+    diff_parser.add_argument(
+        "--mismatch_sim_thr",
+        type=float,
+        default=defaults.FILE_COMPARE_FUNC_MISMATCH_SIM_THRESHOLD * 100,
+        help="Function mismatch similarity threshold. Greater than or equal to this threshold will be considered as a mismatch `!`, smaller wil be considered delete `-`",
+    )
+    diff_parser.add_argument(
+        "-m",
+        "--method",
+        type=str,
+        default=defaults.DEFAULT_CALCULATION_METHOD,
+        help=f"Calculation method for file-level similarity. Valid values: {str(defaults.KNOWN_CALCULATION_METHODS)}",
+    )
+    diff_parser.add_argument(
+        "--output_detail",
+        type=str,
+        default=defaults.VALID_OUTPUT_DETAILS[0],
+        help=f"Output details. Valid values: {str(defaults.VALID_OUTPUT_DETAILS)}",
+    )
+
+    diff_parser.add_argument("file1", type=str, help="First filepath")
+    diff_parser.add_argument("file2", type=str, help="Second filepath")
+    diff_parser.set_defaults(func=genediff)
+
+    parser.set_defaults(func=lambda x: parser.print_help())
+
+    try:
+        args = parser.parse_args()
+        if args.clear_cache:
+            exit(clear_cache(args))
+
+    except IOError as msg:
+        parser.error(str(msg))
+        exit(2)
+
+    args.func(args)
