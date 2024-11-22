@@ -24,6 +24,7 @@ docker-builds-remove:
 
 start_local :
 	mkdir -p $(shell echo ~)/.cg
+	sudo chown -R 1001:1001 $(shell echo ~)/.cg
 
 	#run worker 
 	docker run --rm -d -u 1001:1001 -p 5001:5001 -v  $(shell echo ~)/.cg:/home/cguser/.cg --name $(image) $(image)
@@ -33,6 +34,7 @@ start_local :
 
 start_worker :
 	mkdir -p $(shell echo ~)/.cg
+	sudo chown -R 1001:1001 $(shell echo ~)/.cg
 
 	#run worker 
 	docker run --rm -d -u 1001:1001 -p 5001:5001 -v  $(shell echo ~)/.cg:/home/cguser/.cg --name $(image) ghcr.io/code-genome/cg-worker:latest
