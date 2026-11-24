@@ -132,6 +132,8 @@ class SigmalGene(CGGeneBase):
         self, data, col_size=COL_SIZE, return_array=False, auto_resize_col_size=True
     ):
         dsize = len(data)
+        if dsize == 0:
+            raise ValueError("cannot build a byteplot image from empty data")
         if auto_resize_col_size:
             if dsize < (col_size * col_size):
                 # resize col_size to form a square image
